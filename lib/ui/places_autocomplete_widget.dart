@@ -1,4 +1,5 @@
 library neom_google_places.src;
+import 'package:sint/sint.dart';
 
 import 'dart:async';
 
@@ -109,7 +110,7 @@ class _PlacesAutocompleteOverlayState extends PlacesAutocompleteState {
             ),
           ),
           body: PlacesAutocompleteResult(
-            onTap: Navigator.of(context).pop,
+            onTap: (_) => Sint.back(),
             logo: widget.logo,
             resultTextStyle: widget.resultTextStyle,
           ),
@@ -141,7 +142,7 @@ class _PlacesAutocompleteOverlayState extends PlacesAutocompleteState {
                       : null,
                   icon: _iconBack,
                   onPressed: () {
-                    Navigator.pop(context);
+                    Sint.back();
                   },
                 ),
                 Expanded(
@@ -196,7 +197,7 @@ class _PlacesAutocompleteOverlayState extends PlacesAutocompleteState {
                   .map(
                     (p) => PredictionTile(
                       prediction: p,
-                      onTap: Navigator.of(context).pop,
+                      onTap: (_) => Sint.back(),
                       resultTextStyle: widget.resultTextStyle,
                     ),
                   )
