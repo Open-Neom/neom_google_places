@@ -13,6 +13,7 @@ dependencies:
 
   google_api_headers: ^5.0.1
   neom_maps_services: ^2.0.0
+  sint: ^1.3.0
   http: ^1.6.0
   rxdart: ^0.28.0
 
