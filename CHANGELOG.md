@@ -1,3 +1,7 @@
+## 2.0.2
+- Fix duplicate content in README
+- Add missing sint dependency to pubspec.yaml
+
 ## 2.0.1
 - Updating README
 ## 2.0.0
