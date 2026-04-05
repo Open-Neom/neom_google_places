@@ -1,5 +1,5 @@
 dependency_overrides:
   sint:
-    path: ../sint
+    path: ../../framework/sint
   neom_maps_services:
     path: ../neom_maps_services
