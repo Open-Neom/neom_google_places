@@ -1,3 +1,8 @@
+# Changelog - neom_google_places
+
+## Unreleased - System updates
+- Actualizaciones de estabilidad y compatibilidad.
+
 ## 2.0.2
 - Fix duplicate content in README
 - Add missing sint dependency to pubspec.yaml
