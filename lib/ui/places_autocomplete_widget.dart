@@ -1,5 +1,4 @@
 library neom_google_places.src;
-import 'package:sint/sint.dart';
 
 import 'dart:async';
 
@@ -12,12 +11,13 @@ import 'package:neom_maps_services/domain/models/place_autocomplete_response.dar
 import 'package:neom_maps_services/domain/models/prediction.dart';
 import 'package:neom_maps_services/utils/component.dart';
 import 'package:rxdart/rxdart.dart';
+import 'package:sint/sint.dart';
 
 import '../utils/enums/mode.dart';
 import 'powered_by_google_image.dart';
+import 'widgets/prediction_list_view.dart';
 import 'widgets/prediction_tile.dart';
 import 'widgets/progress_loader.dart';
-import 'widgets/prediction_list_view.dart';
 
 class PlacesAutocompleteWidget extends StatefulWidget {
   final String apiKey;
@@ -52,12 +52,20 @@ class PlacesAutocompleteWidget extends StatefulWidget {
   ///
   /// In case of using a proxy url that requires authentication
   /// or custom configuration
-  final BaseClient? httpClient;
+  final Client? httpClient;
 
   /// optional - set 'resultTextStyle' value in google_maps_webservice
   ///
   /// In case of changing the default text style of result's text
   final TextStyle? resultTextStyle;
+
+  /// Optional custom callback invoked when a [Prediction] is selected instead of
+  /// popping the current route with `prediction`.
+  final ValueChanged<Prediction>? onTap;
+
+  /// Optional side-effect callback invoked when a [Prediction] item is tapped
+  /// before returning the selected [Prediction] via navigation.
+  final ValueChanged<Prediction>? itmClick;
 
   const PlacesAutocompleteWidget({
     required this.apiKey,
@@ -84,6 +92,8 @@ class PlacesAutocompleteWidget extends StatefulWidget {
     this.textStyle,
     this.themeData,
     this.resultTextStyle,
+    this.onTap,
+    this.itmClick,
   });
 
   @override
@@ -95,6 +105,19 @@ class PlacesAutocompleteWidget extends StatefulWidget {
 }
 
 class _PlacesAutocompleteOverlayState extends PlacesAutocompleteState {
+  void _handlePredictionSelection(Prediction prediction) {
+    widget.itmClick?.call(prediction);
+    if (widget.onTap != null) {
+      widget.onTap!(prediction);
+      return;
+    }
+    Sint.pop(prediction);
+  }
+
+  void _handleDismiss() {
+    Sint.pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = widget.themeData ?? Theme.of(context);
@@ -109,7 +132,7 @@ class _PlacesAutocompleteOverlayState extends PlacesAutocompleteState {
             ),
           ),
           body: PlacesAutocompleteResult(
-            onTap: (_) => Sint.back(),
+            onTap: _handlePredictionSelection,
             logo: widget.logo,
             resultTextStyle: widget.resultTextStyle,
           ),
@@ -140,9 +163,7 @@ class _PlacesAutocompleteOverlayState extends PlacesAutocompleteState {
                       ? Colors.black45
                       : null,
                   icon: _iconBack,
-                  onPressed: () {
-                    Sint.back();
-                  },
+                  onPressed: _handleDismiss,
                 ),
                 Expanded(
                   child: Padding(
@@ -196,7 +217,7 @@ class _PlacesAutocompleteOverlayState extends PlacesAutocompleteState {
                   .map(
                     (p) => PredictionTile(
                       prediction: p,
-                      onTap: (_) => Sint.back(),
+                      onTap: _handlePredictionSelection,
                       resultTextStyle: widget.resultTextStyle,
                     ),
                   )
@@ -254,11 +275,96 @@ class _PlacesAutocompleteOverlayState extends PlacesAutocompleteState {
       );
 }
 abstract class PlacesAutocompleteState extends State<PlacesAutocompleteWidget> {
+  static const int maxAutocompleteQueryChars = 512;
+  static final RegExp _unsafeQueryControls = RegExp(
+    r'[\x00-\x1F\x7F-\x9F\u0085\u061C\u200B\u200C\u200E\u200F\u2028\u2029\u202A-\u202E\u2060-\u2069\uFEFF]',
+  );
+  static final RegExp _gemma4ThoughtClosed = RegExp(
+    r'<\|(?:channel|turn)>\s*thought\b[\s\S]*?<(?:channel|turn)\|>'
+    r'|<\|tool_call>[\s\S]*?<tool_call\|>',
+    caseSensitive: false,
+  );
+  static final RegExp _gemma4ThoughtTruncated = RegExp(
+    r'<\|(?:channel|turn)>\s*thought\b[\s\S]*$'
+    r'|<\|tool_call>[\s\S]*$',
+    caseSensitive: false,
+  );
+  static final RegExp _internalReasoningBlock = RegExp(
+    r'<\s*(think|thought|memory_recall|auto_memory|system_context)\b[^>]*>[\s\S]*?(?:<\s*/\s*\1\s*>|$)'
+    r'|\[\s*(BIOCHIP|MEMORY_RECALL|AUTO_MEMORY|SYSTEM_CONTEXT)\b[^\]]*\][\s\S]*?\[\s*/\s*\2\s*\]',
+    caseSensitive: false,
+  );
+  static final RegExp _sentinelBracketBlock = RegExp(
+    r'\[\s*/?\s*(?:BIOCHIP|MEMORY_RECALL|AUTO_MEMORY|SYSTEM_CONTEXT)\b[^\]]*\]',
+    caseSensitive: false,
+  );
+  static final RegExp _turnTokens = RegExp(
+    r'(?:<\|/?(?:turn|channel|eot|im_start|im_end|tool_call)[^>]*\|?>|<(?:turn|channel|tool_call)\|>)',
+    caseSensitive: false,
+  );
+  static final RegExp _closingContentBoundary = RegExp(
+    r'<\s*/\s*content\s*>',
+    caseSensitive: false,
+  );
+  static final RegExp _sensitiveSecretPattern = RegExp(
+    r'(?:\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]+|\b(?:sk_live_|sk_test_|rk_live_|rk_test_|whsec_|sk-|AIza|ghp_|github_pat_|glpat-|xox[baprs]-|AKIA|hf_)[A-Za-z0-9_-]{8,}|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{8,}|(?:x-goog-api-key|api[_-]?key|key|token|access_token|refresh_token|session_token|client_secret|private_key|secret|password|authorization)\s*[=:]\s*[^\s&",;]+|://[^/\s:@]+:[^/\s@]+@)',
+    caseSensitive: false,
+  );
+
+  static String sanitizeAutocompleteQuery(
+    String raw, {
+    int maxChars = maxAutocompleteQueryChars,
+  }) {
+    if (!maxChars.toDouble().isFinite || maxChars <= 0) return '';
+    var cleaned = raw
+        .replaceAll(_gemma4ThoughtClosed, ' ')
+        .replaceAll(_gemma4ThoughtTruncated, ' ')
+        .replaceAll(_internalReasoningBlock, ' ')
+        .replaceAll(_sentinelBracketBlock, ' ')
+        .replaceAll(_turnTokens, ' ')
+        .replaceAll(_closingContentBoundary, '[content_end]')
+        .replaceAll(_unsafeQueryControls, ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (cleaned.length <= maxChars) return cleaned;
+    var end = maxChars;
+    final cu = cleaned.codeUnitAt(end - 1);
+    if (cu >= 0xD800 && cu <= 0xDBFF) end -= 1;
+    if (end <= 0) return '';
+    return cleaned.substring(0, end).trimRight();
+  }
+
+  static String sanitizeAutocompleteError(
+    Object error, {
+    int maxChars = 300,
+  }) {
+    if (!maxChars.toDouble().isFinite || maxChars <= 0) return '';
+    var cleaned = error
+        .toString()
+        .replaceAll(_gemma4ThoughtClosed, ' ')
+        .replaceAll(_gemma4ThoughtTruncated, ' ')
+        .replaceAll(_internalReasoningBlock, ' ')
+        .replaceAll(_sentinelBracketBlock, ' ')
+        .replaceAll(_turnTokens, ' ')
+        .replaceAll(_closingContentBoundary, '[content_end]')
+        .replaceAll(_unsafeQueryControls, ' ')
+        .replaceAll(_sensitiveSecretPattern, '[REDACTED]')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    if (cleaned.length <= maxChars) return cleaned;
+    var end = maxChars;
+    final cu = cleaned.codeUnitAt(end - 1);
+    if (cu >= 0xD800 && cu <= 0xDBFF) end -= 1;
+    if (end <= 0) return '';
+    return cleaned.substring(0, end).trimRight();
+  }
+
   TextEditingController? queryTextController;
   PlacesAutocompleteResponse? response;
   GoogleMapsPlaces? places;
   late bool searching;
   Timer? debounce;
+  StreamSubscription<String>? _querySub;
 
   final _queryBehavior = BehaviorSubject<String>.seeded('');
 
@@ -277,42 +383,79 @@ abstract class PlacesAutocompleteState extends State<PlacesAutocompleteWidget> {
 
     queryTextController!.addListener(_onQueryChange);
 
-    _queryBehavior.stream.listen(doSearch);
+    _querySub = _queryBehavior.stream.listen(doSearch);
   }
 
   Future<void> _initPlaces() async {
-    places = GoogleMapsPlaces(
-      apiKey: widget.apiKey,
-      baseUrl: widget.proxyBaseUrl,
-      httpClient: widget.httpClient,
-      apiHeaders: await const GoogleApiHeaders().getHeaders(),
-    );
+    Map<String, String>? headers;
+    try {
+      headers = await const GoogleApiHeaders().getHeaders();
+    } catch (_) {
+      headers = null;
+    }
+    if (!mounted) return;
+    try {
+      places = GoogleMapsPlaces(
+        apiKey: widget.apiKey,
+        baseUrl: widget.proxyBaseUrl,
+        httpClient: widget.httpClient,
+        apiHeaders: headers,
+      );
+    } catch (e) {
+      places = null;
+      onResponseError(
+        PlacesAutocompleteResponse(
+          predictions: const [],
+          status: 'REQUEST_DENIED',
+          errorMessage: 'Invalid Maps proxy endpoint',
+        ),
+      );
+    }
   }
 
   Future<void> doSearch(String value) async {
-    if (mounted && value.isNotEmpty && places != null) {
+    final trimmed = sanitizeAutocompleteQuery(value);
+    if (mounted && trimmed.isNotEmpty && places != null) {
       setState(() {
         searching = true;
       });
 
-      final res = await places!.autocomplete(
-        value,
-        offset: widget.offset,
-        location: widget.location,
-        radius: widget.radius,
-        language: widget.language,
-        sessionToken: widget.sessionToken,
-        types: widget.types ?? [],
-        components: widget.components ?? [],
-        strictBounds: widget.strictBounds ?? false,
-        region: widget.region,
-      );
+      try {
+        final res = await places!.autocomplete(
+          trimmed,
+          offset: widget.offset,
+          location: widget.location,
+          radius: widget.radius,
+          language: widget.language,
+          sessionToken: widget.sessionToken,
+          types: widget.types ?? [],
+          components: widget.components ?? [],
+          strictBounds: widget.strictBounds ?? false,
+          region: widget.region,
+        );
 
-      if (res.errorMessage?.isNotEmpty == true ||
-          res.status == "REQUEST_DENIED") {
-        onResponseError(res);
-      } else {
-        onResponse(res);
+        if (res.errorMessage?.isNotEmpty == true ||
+            res.status == "REQUEST_DENIED") {
+          onResponseError(
+            PlacesAutocompleteResponse(
+              predictions: res.predictions,
+              status: res.status,
+              errorMessage: res.errorMessage != null
+                  ? sanitizeAutocompleteError(res.errorMessage!)
+                  : null,
+            ),
+          );
+        } else {
+          onResponse(res);
+        }
+      } catch (e) {
+        onResponseError(
+          PlacesAutocompleteResponse(
+            predictions: [],
+            status: 'REQUEST_DENIED',
+            errorMessage: sanitizeAutocompleteError(e),
+          ),
+        );
       }
     } else {
       onResponse(null);
@@ -321,8 +464,11 @@ abstract class PlacesAutocompleteState extends State<PlacesAutocompleteWidget> {
 
   void _onQueryChange() {
     if (debounce?.isActive ?? false) debounce!.cancel();
-    debounce = Timer(Duration(milliseconds: widget.debounce), () {
-      if (!_queryBehavior.isClosed) {
+    final safeMs = widget.debounce.toDouble().isFinite
+        ? widget.debounce.clamp(0, 10000)
+        : 300;
+    debounce = Timer(Duration(milliseconds: safeMs), () {
+      if (!_queryBehavior.isClosed && queryTextController != null) {
         _queryBehavior.add(queryTextController!.text);
       }
     });
@@ -330,12 +476,13 @@ abstract class PlacesAutocompleteState extends State<PlacesAutocompleteWidget> {
 
   @override
   void dispose() {
-    super.dispose();
-
-    places?.dispose();
     debounce?.cancel();
+    _querySub?.cancel();
     _queryBehavior.close();
     queryTextController?.removeListener(_onQueryChange);
+    queryTextController?.dispose();
+    places?.dispose();
+    super.dispose();
   }
 
   @mustCallSuper
@@ -382,10 +529,12 @@ class PlacesAutocomplete {
     Client? httpClient,
     InputDecoration? decoration,
     String startText = "",
-    Duration transitionDuration = const Duration(seconds: 300),
+    Duration transitionDuration = const Duration(milliseconds: 300),
     TextStyle? textStyle,
     ThemeData? themeData,
     TextStyle? resultTextStyle,
+    ValueChanged<Prediction>? onTap,
+    ValueChanged<Prediction>? itmClick,
   }) {
     final autoCompleteWidget = PlacesAutocompleteWidget(
       apiKey: apiKey,
@@ -404,12 +553,14 @@ class PlacesAutocomplete {
       logo: logo,
       onError: onError,
       proxyBaseUrl: proxyBaseUrl,
-      httpClient: httpClient as BaseClient?,
+      httpClient: httpClient,
       startText: startText,
       decoration: decoration,
       textStyle: textStyle,
       themeData: themeData,
       resultTextStyle: resultTextStyle,
+      onTap: onTap,
+      itmClick: itmClick,
     );
 
     if (mode == Mode.overlay) {
@@ -418,13 +569,11 @@ class PlacesAutocomplete {
         builder: (BuildContext ctx) => autoCompleteWidget,
       );
     } else {
-      return Navigator.push(
-        context,
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => autoCompleteWidget,
-          transitionDuration: transitionDuration,
-        ),
-      );
+      return Sint.to<Prediction>(
+            () => autoCompleteWidget,
+            duration: transitionDuration,
+          ) ??
+          Future<Prediction?>.value();
     }
   }
 }

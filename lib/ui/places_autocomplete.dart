@@ -8,6 +8,7 @@ import 'package:neom_maps_services/domain/models/location.dart';
 import 'package:neom_maps_services/domain/models/place_autocomplete_response.dart';
 import 'package:neom_maps_services/domain/models/prediction.dart';
 import 'package:neom_maps_services/utils/component.dart';
+import 'package:sint/sint.dart';
 
 import '../utils/enums/mode.dart';
 import 'places_autocomplete_widget.dart';
@@ -34,10 +35,12 @@ class PlacesAutocomplete {
     Client? httpClient,
     InputDecoration? decoration,
     String startText = "",
-    Duration transitionDuration = const Duration(seconds: 300),
+    Duration transitionDuration = const Duration(milliseconds: 300),
     TextStyle? textStyle,
     ThemeData? themeData,
     TextStyle? resultTextStyle,
+    ValueChanged<Prediction>? onTap,
+    ValueChanged<Prediction>? itmClick,
   }) {
     final autoCompleteWidget = PlacesAutocompleteWidget(
       apiKey: apiKey,
@@ -56,12 +59,14 @@ class PlacesAutocomplete {
       logo: logo,
       onError: onError,
       proxyBaseUrl: proxyBaseUrl,
-      httpClient: httpClient as BaseClient?,
+      httpClient: httpClient,
       startText: startText,
       decoration: decoration,
       textStyle: textStyle,
       themeData: themeData,
       resultTextStyle: resultTextStyle,
+      onTap: onTap,
+      itmClick: itmClick,
     );
 
     if (mode == Mode.overlay) {
@@ -70,13 +75,11 @@ class PlacesAutocomplete {
         builder: (BuildContext ctx) => autoCompleteWidget,
       );
     } else {
-      return Navigator.push(
-        context,
-        PageRouteBuilder(
-          pageBuilder: (_, __, ___) => autoCompleteWidget,
-          transitionDuration: transitionDuration,
-        ),
-      );
+      return Sint.to<Prediction>(
+            () => autoCompleteWidget,
+            duration: transitionDuration,
+          ) ??
+          Future<Prediction?>.value();
     }
   }
 }

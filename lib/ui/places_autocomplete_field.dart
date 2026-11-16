@@ -166,15 +166,25 @@ class LocationAutocompleteFieldState extends State<PlacesAutocompleteField> {
   @override
   void didUpdateWidget(PlacesAutocompleteField oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (widget.controller != null) {
-      widget.controller!.text = oldWidget.controller!.text;
-    }
     if (widget.controller == null && oldWidget.controller != null) {
+      _controller?.dispose();
       _controller =
           TextEditingController.fromValue(oldWidget.controller!.value);
     } else if (widget.controller != null && oldWidget.controller == null) {
+      if (widget.controller!.text.isEmpty &&
+          (_controller?.text.isNotEmpty ?? false)) {
+        widget.controller!.value = _controller!.value;
+      }
+      _controller?.dispose();
       _controller = null;
     }
+  }
+
+  @override
+  void dispose() {
+    _controller?.dispose();
+    _controller = null;
+    super.dispose();
   }
 
   Future<Prediction?> _showAutocomplete() async => PlacesAutocomplete.show(

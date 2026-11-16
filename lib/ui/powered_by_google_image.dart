@@ -19,6 +19,7 @@ class PoweredByGoogleImage extends StatelessWidget {
                 ? NeomGooglePlacesConstants.poweredByGoogleWhite
                 : NeomGooglePlacesConstants.poweredByGoogleBlack,
             scale: 2.5,
+            errorBuilder: (_, __, ___) => const SizedBox.shrink(),
           ),
         )
       ],

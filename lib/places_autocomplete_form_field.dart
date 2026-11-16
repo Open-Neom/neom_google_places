@@ -138,12 +138,16 @@ class TextFormFieldState extends FormFieldState<String> {
       widget.controller?.addListener(_handleControllerChanged);
 
       if (oldWidget.controller != null && widget.controller == null) {
+        _controller?.dispose();
         _controller =
             TextEditingController.fromValue(oldWidget.controller!.value);
       }
       if (widget.controller != null) {
         setValue(widget.controller!.text);
-        if (oldWidget.controller == null) _controller = null;
+        if (oldWidget.controller == null) {
+          _controller?.dispose();
+          _controller = null;
+        }
       }
     }
   }
@@ -151,6 +155,8 @@ class TextFormFieldState extends FormFieldState<String> {
   @override
   void dispose() {
     widget.controller?.removeListener(_handleControllerChanged);
+    _controller?.dispose();
+    _controller = null;
     super.dispose();
   }
 
