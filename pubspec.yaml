@@ -15,9 +15,11 @@ dependencies:
   flutter:
     sdk: flutter
 
+  geolocator: ^14.1.2
   google_api_headers: ">=5.4.1 <5.4.2"
+  google_maps_flutter: ^2.19.0
 
-
+  neom_core: ^2.0.0
   neom_maps_services: ^2.0.0
   sint: ^2.0.2
 
