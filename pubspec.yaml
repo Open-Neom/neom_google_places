@@ -21,7 +21,7 @@ dependencies:
 
   neom_core: ^2.0.0
   neom_maps_services: ^2.0.0
-  sint: ^2.0.2
+  sint: ^2.3.0
 
 
   http: ^1.6.0
