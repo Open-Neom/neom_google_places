@@ -1,19 +1,19 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:google_api_headers/google_api_headers.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:neom_core/app_config.dart';
 import 'package:neom_core/cloud_properties.dart';
+import 'package:neom_core/data/implementations/geolocator_controller.dart';
 import 'package:neom_core/domain/model/app_profile.dart';
 import 'package:neom_core/domain/model/place.dart';
 import 'package:neom_core/domain/use_cases/maps_service.dart';
 import 'package:neom_core/domain/use_cases/user_service.dart';
 import 'package:neom_core/utils/constants/core_constants.dart';
 import 'package:neom_core/utils/neom_error_logger.dart';
-import 'package:neom_core/utils/platform/core_geolocation.dart';
 import 'package:neom_core/utils/position_utilities.dart';
 import 'package:neom_maps_services/data/google_maps_places.dart';
 import 'package:neom_maps_services/domain/models/location.dart';
@@ -27,11 +27,26 @@ import '../../ui/places_autocomplete.dart';
 import '../../utils/enums/mode.dart';
 
 class MapsController extends SintController implements MapsService {
+  MapsController({
+    Future<Position?> Function()? currentPositionLoader,
+  }) : _currentPositionLoader =
+            currentPositionLoader ?? (() => GeoLocatorController().getCurrentPosition());
+
+  final Future<Position?> Function() _currentPositionLoader;
+
+  /// Safe default coordinates used only while GPS and profile coordinates are
+  /// still resolving or unavailable.
+  static const LatLng defaultFallbackTarget = LatLng(20.6597, -103.3496);
 
   final userServiceImpl = Sint.find<UserService>();
 
   GoogleMapController? _googleMapController;
   final RxSet<Marker> _markers = <Marker>{}.obs;
+  bool _usedFallbackInitialPosition = false;
+  Future<void>? _initFuture;
+
+  @visibleForTesting
+  Future<void> get initializationComplete => _initFuture ?? Future.value();
 
   /// Cached Google API key — fetched from Cloud Functions in secure mode.
   String _googleApiKey = '';
@@ -47,39 +62,73 @@ class MapsController extends SintController implements MapsService {
   Location location = Location(latitude: 0, longitude: 0);
   final Rx<Prediction> prediction = Prediction().obs;
 
+  static bool _hasValidCoordinates(Position? position) =>
+      position != null &&
+      position.latitude.isFinite &&
+      position.longitude.isFinite &&
+      (position.latitude != 0 || position.longitude != 0);
+
   @override
-  void onInit() async {
+  void onInit() {
     super.onInit();
     AppConfig.logger.t("Maps Controller Init");
+    profile = userServiceImpl.profile;
+    _initFuture = _initialize();
+  }
 
-    // On web, ALWAYS fetch Google API key from Cloud Functions (even if
-    // getConfig failed — the key is never in client-side properties).
-    if (CloudProperties.isSecureMode || kIsWeb) {
-      _googleApiKey = await CloudProperties.getSecretFromCloud('googleApiKey');
-    } else {
-      _googleApiKey = CloudProperties.getGoogleApiKey();
+  Future<void> _initialize() async {
+    try {
+      // On web, ALWAYS fetch Google API key from Cloud Functions (even if
+      // getConfig failed — the key is never in client-side properties).
+      if (CloudProperties.isSecureMode || kIsWeb) {
+        _googleApiKey = await CloudProperties.getSecretFromCloud('googleApiKey');
+      } else {
+        _googleApiKey = CloudProperties.getGoogleApiKey();
+      }
+    } catch (e, st) {
+      NeomErrorLogger.recordError(
+        e,
+        st,
+        module: 'neom_google_places',
+        operation: 'onInit.apiKey',
+      );
     }
 
+    if (isClosed) return;
     profile = userServiceImpl.profile;
 
-    referencePosition = await platformGetCurrentPositionHighAccuracy();
-
-    if(profile.position != null) {
-      referencePosition = profile.position!;
-    } else {
-      referencePosition = await platformGetCurrentPositionHighAccuracy();
-      profile.position = referencePosition;
-      userServiceImpl.profile = profile;
+    Position? gpsPosition;
+    try {
+      gpsPosition = await _currentPositionLoader();
+    } catch (e, st) {
+      NeomErrorLogger.recordError(
+        e,
+        st,
+        module: 'neom_google_places',
+        operation: 'onInit.gps',
+      );
     }
 
-    if(referencePosition != null) {
+    if (isClosed) return;
+
+    if (_hasValidCoordinates(gpsPosition)) {
+      referencePosition = gpsPosition;
+      profile.position = gpsPosition;
+      userServiceImpl.profile = profile;
+    } else if (_hasValidCoordinates(profile.position)) {
+      referencePosition = profile.position;
+    } else {
+      referencePosition = null;
+    }
+
+    if (referencePosition != null) {
       _placePosition.value = referencePosition!;
       location = Location(
-          latitude: referencePosition!.latitude,
-          longitude: referencePosition!.longitude);
+        latitude: referencePosition!.latitude,
+        longitude: referencePosition!.longitude,
+      );
+      await goToHomePosition();
     }
-
-    await goToHomePosition();
   }
 
   @override
@@ -87,8 +136,9 @@ class MapsController extends SintController implements MapsService {
     AppConfig.logger.d("Go to position on Maps Controller");
 
     try {
+      _usedFallbackInitialPosition = false;
       _placePosition.value = position;
-      _googleMapController?.animateCamera(CameraUpdate.newCameraPosition(CameraPosition(
+      await _googleMapController?.animateCamera(CameraUpdate.newCameraPosition(CameraPosition(
           target: LatLng(_placePosition.value.latitude, _placePosition.value.longitude),
           zoom: CoreConstants.cameraPositionZoom
       )));
@@ -113,18 +163,26 @@ class MapsController extends SintController implements MapsService {
     AppConfig.logger.t("goToHomePosition on Maps Controller");
 
     try {
-      if(referencePosition == null) {
-        AppConfig.logger.d("Profile position is null, cannot go to home position");
+      final targetPosition = referencePosition;
+      if (!_hasValidCoordinates(targetPosition)) {
+        AppConfig.logger.d("Reference position is null or zero, cannot go to home position");
         return;
       }
 
-      _googleMapController?.animateCamera(
+      final mapController = _googleMapController;
+      if (mapController == null) {
+        AppConfig.logger.d("GoogleMapController not ready yet");
+        return;
+      }
+
+      _usedFallbackInitialPosition = false;
+      await mapController.animateCamera(
         CameraUpdate.newCameraPosition(
           CameraPosition(
-            target: LatLng(referencePosition!.latitude, referencePosition!.longitude),
+            target: LatLng(targetPosition!.latitude, targetPosition.longitude),
             zoom: CoreConstants.cameraPositionZoom,
-          )
-        )
+          ),
+        ),
       );
     } catch (e) {
       AppConfig.logger.d(e.toString());
@@ -176,9 +234,24 @@ class MapsController extends SintController implements MapsService {
   }
 
   @override
-  CameraPosition initialCameraPosition(){
-    return CameraPosition(
-      target: LatLng(referencePosition!.latitude, referencePosition!.longitude),
+  CameraPosition initialCameraPosition() {
+    final fallbackProfilePos = profile.position ?? userServiceImpl.profile.position;
+    if (_hasValidCoordinates(referencePosition)) {
+      _usedFallbackInitialPosition = false;
+      return CameraPosition(
+        target: LatLng(referencePosition!.latitude, referencePosition!.longitude),
+        zoom: CoreConstants.cameraPositionZoom,
+      );
+    }
+    _usedFallbackInitialPosition = true;
+    if (_hasValidCoordinates(fallbackProfilePos)) {
+      return CameraPosition(
+        target: LatLng(fallbackProfilePos!.latitude, fallbackProfilePos.longitude),
+        zoom: CoreConstants.cameraPositionZoom,
+      );
+    }
+    return const CameraPosition(
+      target: defaultFallbackTarget,
       zoom: CoreConstants.cameraPositionZoom,
     );
   }
@@ -269,6 +342,11 @@ class MapsController extends SintController implements MapsService {
   @override
   set googleMapController(GoogleMapController? controller) {
     _googleMapController = controller;
+    if (controller != null &&
+        _usedFallbackInitialPosition &&
+        _hasValidCoordinates(referencePosition)) {
+      unawaited(goToHomePosition());
+    }
   }
 
   @override
